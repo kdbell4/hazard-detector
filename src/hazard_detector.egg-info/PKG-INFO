@@ -1,0 +1,36 @@
+Metadata-Version: 2.4
+Name: hazard-detector
+Version: 0.1.0
+Summary: Hazard detection using YOLO and OpenCV
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+Requires-Dist: ultralytics>=8.0.0
+
+# hazard-detector
+
+Hazard detection using YOLO and OpenCV.
+
+## Installation
+
+```bash
+pip install -e .
+```
+
+## Usage
+
+```bash
+# Detect objects in an image
+hazard-detector path/to/image.jpg
+
+# Use a different model
+hazard-detector path/to/image.jpg --model yolov8s.pt
+
+# Adjust confidence threshold
+hazard-detector path/to/image.jpg --conf 0.5
+
+# Webcam detection
+hazard-detector webcam
+
+# Webcam with specific camera ID
+hazard-detector webcam --camera-id 1
+```

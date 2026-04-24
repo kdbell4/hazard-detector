@@ -1,0 +1,30 @@
+Metadata-Version: 2.4
+Name: yolo-demo
+Version: 0.1.0
+Summary: YOLO object detection demo using Ultralytics
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+Requires-Dist: ultralytics>=8.0.0
+
+# yolo-demo
+
+YOLO object detection demo using Ultralytics.
+
+## Installation
+
+```bash
+pip install -e .
+```
+
+## Usage
+
+```bash
+# Detect objects in an image
+yolo-demo path/to/image.jpg
+
+# Use a different model
+yolo-demo path/to/image.jpg --model yolov8s.pt
+
+# Adjust confidence threshold
+yolo-demo path/to/image.jpg --conf 0.5
+```
