@@ -1,8 +1,11 @@
+import os
+import sys
+import time
+import numpy as np
+
 import cv2
 from ultralytics import SAM
-import time
-import sys
-import os
+
 
 def main() -> None:
     # Check if an image path was provided as an argument
@@ -18,27 +21,62 @@ def main() -> None:
             return
 
         print(f"Processing image: {image_path}")
-        frame = cv2.imread(image_path)
-        if frame is None:
-            print("Error: Could not decode image.")
-            return
+        # frame = cv2.imread(image_path)
 
-        width = frame.shape[1]
-        height = frame.shape[0]
-        ctrdot = [width // 2, height]
-        
-        print("Running inference...", end="", flush=True)
-        start_time = time.time()
-        results = model.predict(frame, conf=0.25, points=[ctrdot])
-        end_time = time.time()
-        
-        annotated_frame = results[0].plot()
-        print(f" Done ({end_time - start_time:.2f}s)")
+        # Video Loop:
 
-        cv2.imshow('SAM Segmentation - Image', annotated_frame)
-        print("Press any key in the window to exit.")
-        cv2.waitKey(0)
+        frame_count = 0
+        frame_analysis_frac = 5
+        cap = cv2.VideoCapture(image_path)
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            if frame is None:
+                print("Error: Could not decode image.")
+                return
+
+            if frame_count % frame_analysis_frac == 0:
+                width = frame.shape[1]
+                height = frame.shape[0]
+                ctrdot = [width // 2, height]
+                ctrdots = [ctrdot]
+                # ctrdots = [[x, height] for x in [2 * width // 5, width // 2, 3 * width // 5]]
+                # bbox = [2 * width // 5, height-1, 3 * width // 5, height]
+
+                start_time = time.time()
+                results = model.predict(frame, conf=0.25, points=ctrdots)
+                end_time = time.time()
+
+                annotated_frame = results[0].plot()
+                print(f" Done ({end_time - start_time:.2f}s)")
+
+                if results[0].masks:
+                    polygons = results[0].masks.xy
+                    # print(f"Polygon number: {len(polygons)}")
+                    
+                    for polygon in polygons:
+                        pts = polygon.astype(np.int32)
+                        # cv2.polylines(frame, [pts], isClosed=True, 
+                        #                 color=(0, 255, 0), thickness=2)
+                        
+                        for point in pts:
+                            cv2.circle(
+                                annotated_frame,
+                                (int(point[0]), int(point[1])),
+                                radius=3,
+                                color=(0, 255, 0),
+                                thickness=-1,
+                            )
+                cv2.imshow("SAM Segmentation - Image", annotated_frame)
+
+            cv2.waitKey(1)
+            frame_count += 1
+
         cv2.destroyAllWindows()
+        print("Press any key in the window to exit.")
+
 
 if __name__ == "__main__":
     main()
