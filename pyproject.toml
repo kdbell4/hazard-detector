@@ -1,0 +1,17 @@
+[project]
+name = "path-detection"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "k4", email = "" }
+]
+requires-python = ">=3.12.12"
+dependencies = []
+
+[project.scripts]
+path-detection = "path_detection:main"
+
+[build-system]
+requires = ["uv_build>=0.11.7,<0.12.0"]
+build-backend = "uv_build"
