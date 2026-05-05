@@ -40,35 +40,31 @@ def main() -> None:
             if frame_count % frame_analysis_frac == 0:
                 width = frame.shape[1]
                 height = frame.shape[0]
-                ctrdot = [width // 2, height]
-                ctrdots = [ctrdot]
-                # ctrdots = [[x, height] for x in [2 * width // 5, width // 2, 3 * width // 5]]
+                # ctrdot = [width // 2, height]
+                # ctrdots = [ctrdot]
+                ctrdots = [[x, height] for x in [2 * width // 5, width // 2, 3 * width // 5]]
                 # bbox = [2 * width // 5, height-1, 3 * width // 5, height]
 
                 start_time = time.time()
                 results = model.predict(frame, conf=0.25, points=ctrdots)
                 end_time = time.time()
 
-                annotated_frame = results[0].plot()
+                # annotated_frame = results[0].plot()
+                annotated_frame = frame.copy()
                 print(f" Done ({end_time - start_time:.2f}s)")
 
+                
                 if results[0].masks:
                     polygons = results[0].masks.xy
-                    # print(f"Polygon number: {len(polygons)}")
                     
-                    for polygon in polygons:
-                        pts = polygon.astype(np.int32)
-                        # cv2.polylines(frame, [pts], isClosed=True, 
-                        #                 color=(0, 255, 0), thickness=2)
+                    if polygons:
+                        # Find the polygon with the largest area
+                        largest_polygon = max(polygons, key=cv2.contourArea)
                         
-                        for point in pts:
-                            cv2.circle(
-                                annotated_frame,
-                                (int(point[0]), int(point[1])),
-                                radius=3,
-                                color=(0, 255, 0),
-                                thickness=-1,
-                            )
+                        # Draw the largest polygon in GREEN
+                        pts = largest_polygon.astype(np.int32).reshape((-1, 1, 2))
+                        cv2.polylines(annotated_frame, [pts], isClosed=True, 
+                                      color=(0, 255, 0), thickness=2)
                 cv2.imshow("SAM Segmentation - Image", annotated_frame)
 
             cv2.waitKey(1)
