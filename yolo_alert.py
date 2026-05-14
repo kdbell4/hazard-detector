@@ -1,3 +1,4 @@
+# install pygame in terminal: pip install pygame
 import cv2
 from ultralytics import YOLO
 import pygame
