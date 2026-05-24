@@ -6,30 +6,74 @@ Real-time hazard detection for electric scooters using computer vision. A camera
 
 ## Team
 
-Each part of the system was built by a different person and then integrated into the final app.
+Each part of the system was built by a different person and then combined into the final app.
 
-### 🟠 Katherine — Hazard Detection (model training & datasets)
+### 🎯 Toby — Hazard Detection & Integration
 
-Responsible for identifying which hazards to detect, sourcing training data, and producing the custom YOLO model weights in `models/`.
+Built the core hazard detection logic and combined all four components into the final unified app.
 
-**What YOLOv8 already detects out of the box** (no custom training needed):
+**Hazard detection** uses three conditions that all must be true before an alert fires — this prevents false alarms from objects that are far away or off to the side:
 
-| Class | ID | Relevant to scooters? |
-|-------|----|-----------------------|
-| person | 0 | ✅ |
-| bicycle | 1 | ✅ |
-| car | 2 | ✅ |
-| motorcycle | 3 | ✅ |
-| bus | 5 | ✅ |
-| truck | 7 | ✅ |
-| traffic light | 9 | ✅ |
-| fire hydrant | 10 | ✅ |
-| stop sign | 11 | ✅ |
-| bench | 13 | ✅ |
-| bird | 14 | ✅ |
-| dog | 16 | ✅ |
-| cat | 15 | ✅ |
-| skateboard | 36 | ✅ |
+```python
+# 1. Close enough? (bounding box area as a proxy for distance)
+area_ratio = (box_width * box_height) / (frame_width * frame_height)
+too_close  = area_ratio > 0.30   # person (appears large even when far)
+too_close  = area_ratio > 0.08   # everything else
+
+# 2. In the path? (center of frame heuristic)
+in_path = abs(object_center_x - frame_center_x) < frame_width * 0.25
+
+# 3. On the ground ahead? (low in frame = close to the scooter)
+low = y2 > frame_height * 0.6
+```
+
+Only when all three are true is the object flagged as a hazard and drawn in red.
+
+**Integration** — combined everyone's work into the web app pipeline:
+
+```
+Webcam
+  │
+  ▼
+CameraStream thread       ← continuously captures frames in background
+  │
+  ▼
+DetectionEngine thread    ← owns all ML inference
+  ├── SAM every 5 frames       → road path polygon  (Kenny)
+  └── 6× YOLO every frame      → run in parallel via ThreadPoolExecutor  (Ashwin)
+        │
+        ▼
+  Hazard evaluation             area ratio + path check  (Toby)
+        │
+        ├── Audio alert + cooldown + CSV log  (Katherine)
+        └── SharedState  ←──────────────────────────┐
+                                                     │
+FastAPI server (main thread)                         │
+  ├── GET  /              → web dashboard            │
+  ├── GET  /video_feed    → MJPEG stream             │
+  ├── GET  /api/status    → current hazards ─────────┘
+  ├── GET  /api/log       → detection history
+  ├── POST /api/toggle_model  → enable/disable models live
+  └── POST /api/toggle_audio  → mute/unmute alerts
+```
+
+---
+
+### 🤖 Ashwin — Custom Models & Object Categories
+
+Responsible for identifying which hazards needed custom training (things YOLO doesn't know about out of the box), sourcing datasets, and producing the `.pt` weight files in `models/`.
+
+**What YOLOv8 already detects** (no training needed — used as-is):
+
+| Class | ID | Class | ID |
+|-------|-----|-------|-----|
+| person | 0 | traffic light | 9 |
+| bicycle | 1 | fire hydrant | 10 |
+| car | 2 | stop sign | 11 |
+| motorcycle | 3 | bench | 13 |
+| bus | 5 | bird | 14 |
+| truck | 7 | cat | 15 |
+| | | dog | 16 |
 
 **Hazards that required custom-trained models** (not in COCO):
 
@@ -41,96 +85,50 @@ Responsible for identifying which hazards to detect, sourcing training data, and
 | Curbs | `models/curb_best.pt` | Custom collected |
 | Speed bumps | `models/speedbump_best.pt` | Custom collected |
 
-> **Puddles** are a planned addition. Existing datasets for training:
+> **Puddles** are a planned addition — public datasets already exist:
 > - [Puddles Object Detection – Roboflow](https://universe.roboflow.com/water-yzjeu/puddles-7mvza-hwecr)
 > - [Puddle Detection – Hanyang University / Roboflow](https://universe.roboflow.com/hanyang-university-bd2kb/puddle-detection) (~1,500 images, 79.6% mAP)
 
 ---
 
-### 📏 Ashwin — Distance Estimation
+### 🛣️ Kenny — Path Detection with SAM
 
-Built the proximity logic that determines how close an object is to the scooter without a depth sensor, using bounding box area as a proxy for distance.
+Built the path detection system that determines whether a detected object is actually in the road ahead, rather than just somewhere in the frame.
 
-The key insight: the closer an object is, the larger its bounding box relative to the frame. The ratio of box area to total frame area is computed for every detection:
-
-```python
-area_ratio = (box_width * box_height) / (frame_width * frame_height)
-```
-
-Class-specific thresholds are used because people appear large even when far away:
+Uses [MobileSAM](https://github.com/ChaoningZhang/MobileSAM) to segment the road surface in real time. Three seed points along the bottom center of the frame are fed to SAM, which returns a polygon of the road ahead. An object is only considered in-path if its base point lands inside that polygon:
 
 ```python
-too_close = area_ratio > 0.30   # person
-too_close = area_ratio > 0.08   # everything else
-```
+# Seed points along bottom edge → SAM finds the road polygon
+ctrdots = [[2*w//5, h], [w//2, h], [3*w//5, h]]
+results = sam_model.predict(frame, points=ctrdots)
+path_polygon = max(results[0].masks.xy, key=cv2.contourArea)
 
----
-
-### 🛣️ Toby — Path Detection
-
-Built the logic that checks whether a detected object is actually in the scooter's path, not just somewhere in the frame.
-
-**Without SAM (default):** uses a center-of-frame heuristic — objects are considered in-path if their horizontal center falls within the middle 50% of the frame, and their bottom edge is in the lower 40% of the frame (i.e. on the ground ahead).
-
-```python
-in_path = abs(object_center_x - frame_center_x) < frame_width * 0.25
-low     = y2 > frame_height * 0.6
-```
-
-**With SAM (`models/mobile_sam.pt`):** uses the [MobileSAM](https://github.com/ChaoningZhang/MobileSAM) segmentation model to detect the actual road surface polygon. An object is only flagged if its base point falls inside that polygon — much more accurate on curved paths or angled cameras.
-
-```python
+# Check if the object's foot is on the road
 in_path = cv2.pointPolygonTest(path_polygon, bottom_center_pt, False) >= 0
 ```
 
-SAM runs every 5 frames (not every frame) to keep performance up, reusing the last known road polygon between updates.
+SAM runs every 5 frames and reuses the last polygon in between — keeping performance up while still tracking road curves.
+
+Without `mobile_sam.pt`, the app falls back to Toby's center-of-frame heuristic automatically.
 
 ---
 
-### 🔔 Kenny — Alert System
+### 🔔 Katherine — Alert System
 
-Built the alert system that fires when a hazard is confirmed and manages how often alerts repeat.
+Built the alert system that fires when a hazard is confirmed and handles audio playback, cooldown, and logging.
 
-- **Audio alert:** plays `alert.mp3` via pygame when a hazard is detected
-- **Cooldown:** alerts can only fire every 2 seconds — prevents constant noise if an obstacle stays in frame
-- **CSV logging:** every confirmed hazard is written to `hazard_log.csv` with a timestamp, object type, area ratio, and whether it was in the path
+- **Audio:** plays `alert.mp3` via pygame the moment a hazard is detected
+- **Cooldown:** alerts can only fire once every 2 seconds — prevents constant beeping when an obstacle stays in frame
+- **CSV logging:** every confirmed hazard is appended to `hazard_log.csv` with a timestamp, object type, area ratio, and path status so detections can be reviewed later
 
 ```python
 if (current_time - last_alert_time) >= ALERT_COOLDOWN:
-    alert_sound.play()
+    if not pygame.mixer.get_busy():
+        alert_sound.play()
     last_alert_time = current_time
-```
 
----
-
-### 🔗 Katherine & Toby — Integration
-
-Combined all four components into the unified web app. The final architecture runs detection in a background thread so the web server stays responsive:
-
-```
-Webcam
-  │
-  ▼
-CameraStream thread       ← continuously captures frames in background
-  │
-  ▼
-DetectionEngine thread    ← owns all ML inference (Ashwin + Katherine)
-  ├── SAM every 5 frames       → road path polygon  (Toby)
-  └── 6× YOLO every frame      → run in parallel via ThreadPoolExecutor
-        │
-        ▼
-  Hazard evaluation             area ratio (Ashwin) + path check (Toby)
-        │
-        ├── Audio alert + cooldown + CSV log  (Kenny)
-        └── SharedState  ←──────────────────────────┐
-                                                     │
-FastAPI server (main thread)                         │
-  ├── GET  /              → web dashboard            │
-  ├── GET  /video_feed    → MJPEG stream             │
-  ├── GET  /api/status    → current hazards ─────────┘
-  ├── GET  /api/log       → detection history
-  ├── POST /api/toggle_model  → enable/disable models live
-  └── POST /api/toggle_audio  → mute/unmute alerts
+# Log to CSV
+writer.writerow([timestamp, object_type, area_ratio, in_path, model])
 ```
 
 ---
