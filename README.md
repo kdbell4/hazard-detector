@@ -4,9 +4,17 @@ Real-time hazard detection for electric scooters. A webcam feed is analyzed usin
 
 ---
 
-## How it works
+## What it does
 
-Each frame from the webcam is run through up to six YOLO models in parallel. Every detected object is checked against three conditions — is it close enough, is it directly ahead, and is it on the ground in front of the scooter? Only if all three are true does it trigger an alert. Detections are logged to a CSV file and streamed live to a web dashboard.
+Electric scooters are low to the ground and move fast, which makes obstacles like potholes, rocks, and curbs genuinely dangerous — especially when riders are focused on traffic and not the road surface. This project is a real-time hazard detection system designed to act as a second set of eyes.
+
+A webcam is mounted on the scooter and streams live video into the app. The app constantly analyzes the video to identify anything that could be a hazard — potholes, rocks, stairs, curbs, speed bumps, people, animals, bikes, and cars. When something dangerous is spotted, it plays an audio alert so the rider knows to slow down or steer around it, without having to look at a screen.
+
+The tricky part is avoiding false alarms. Just because a car appears in the frame doesn't mean it's about to be hit — it could be a parked car off to the side, or a vehicle far down the road. So before triggering an alert, the app checks three things: is the object large enough in the frame to be close by, is it directly ahead in the scooter's path, and is it low enough in the frame to actually be on the ground nearby? All three have to be true before an alarm fires.
+
+The app also runs a road segmentation model that figures out exactly where the road surface is in front of the scooter. This makes the path check smarter — instead of just looking at whether something is in the center of the frame, it checks whether the object is sitting on the actual road ahead.
+
+Everything is accessible through a web dashboard that shows the live camera feed with detected objects highlighted, which models are active, a log of past detections, and controls to mute the audio or toggle individual models on and off.
 
 ---
 
