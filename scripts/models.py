@@ -27,18 +27,19 @@ def get_device() -> str:
 DEVICE = get_device()
 print(f"Using device: {DEVICE}")
 
-# ── Model paths (relative to this file) ──────────────────────────────────
-ROOT = Path(__file__).parent
+# ── Model paths (project root is one level up from scripts/) ─────────────
+PROJECT_ROOT = Path(__file__).parent.parent
+MODELS_DIR   = PROJECT_ROOT / "models"
 
 HAZARD_IDS = {0, 1, 2, 3, 5, 7, 9, 10, 11, 12, 13, 14, 36}
 
 MODEL_CONFIGS = [
-    {"file": ROOT / "yolov8m.pt",       "color": (0, 255, 0),   "conf": 0.80, "hazard_filter": True},
-    {"file": ROOT / "best.pt",           "color": (0, 0, 255),   "conf": 0.80, "hazard_filter": False},
-    # {"file": ROOT / "rocks_best.pt",   "color": (0, 165, 255), "conf": 0.80, "hazard_filter": False},  # disabled by default
-    {"file": ROOT / "stairs_best.pt",   "color": (255, 0, 0),   "conf": 0.80, "hazard_filter": False},
-    {"file": ROOT / "curb_best.pt",     "color": (255, 255, 0), "conf": 0.80, "hazard_filter": False},
-    {"file": ROOT / "speedbump_best.pt","color": (255, 0, 255), "conf": 0.80, "hazard_filter": False},
+    {"file": PROJECT_ROOT / "yolov8m.pt",        "color": (0, 255, 0),   "conf": 0.80, "hazard_filter": True},
+    {"file": MODELS_DIR   / "best.pt",            "color": (0, 0, 255),   "conf": 0.80, "hazard_filter": False},
+    # {"file": MODELS_DIR / "rocks_best.pt",      "color": (0, 165, 255), "conf": 0.80, "hazard_filter": False},  # disabled by default
+    {"file": MODELS_DIR   / "stairs_best.pt",     "color": (255, 0, 0),   "conf": 0.80, "hazard_filter": False},
+    {"file": MODELS_DIR   / "curb_best.pt",       "color": (255, 255, 0), "conf": 0.80, "hazard_filter": False},
+    {"file": MODELS_DIR   / "speedbump_best.pt",  "color": (255, 0, 255), "conf": 0.80, "hazard_filter": False},
 ]
 
 # Load only models whose files exist

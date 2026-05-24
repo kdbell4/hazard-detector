@@ -1,10 +1,14 @@
 import os
 import sys
 import time
+from pathlib import Path
 import numpy as np
 
 import cv2
 from ultralytics import SAM
+
+# models/ lives at the project root, one level up from scripts/
+MODELS_DIR = Path(__file__).parent.parent / "models"
 
 
 def main() -> None:
@@ -12,7 +16,7 @@ def main() -> None:
     image_path = sys.argv[1] if len(sys.argv) > 1 else None
 
     print("Initializing SAM model...")
-    model = SAM("models/mobile_sam.pt")
+    model = SAM(str(MODELS_DIR / "mobile_sam.pt"))
 
     if image_path:
         # IMAGE MODE

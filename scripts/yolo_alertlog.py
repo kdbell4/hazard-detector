@@ -35,14 +35,15 @@ print(f"Using device: {DEVICE}")
 
 # ── Audio setup ───────────────────────────────────────────────────────────
 pygame.mixer.init()
-SCRIPT_DIR = Path(__file__).parent
-alert_path = SCRIPT_DIR / "alert.mp3"
+SCRIPT_DIR   = Path(__file__).parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+alert_path = PROJECT_ROOT / "alert.mp3"
 alert_sound = pygame.mixer.Sound(str(alert_path)) if alert_path.exists() else None
 if not alert_sound:
     print("[WARN] alert.mp3 not found — audio alerts disabled")
 
 # ── CSV logging ───────────────────────────────────────────────────────────
-LOG_FILE_PATH = SCRIPT_DIR / "hazard_log.csv"
+LOG_FILE_PATH = PROJECT_ROOT / "hazard_log.csv"
 print(f"Saving log to: {LOG_FILE_PATH}")
 if not LOG_FILE_PATH.exists():
     with open(LOG_FILE_PATH, mode="w", newline="") as file:
@@ -53,9 +54,7 @@ print("Loading models…")
 yolo_model = YOLO("yolov8n.pt")
 yolo_model.to(DEVICE)
 
-sam_path = SCRIPT_DIR / "models" / "mobile_sam.pt"
-if not sam_path.exists():
-    sam_path = SCRIPT_DIR / "mobile_sam.pt"
+sam_path = PROJECT_ROOT / "models" / "mobile_sam.pt"
 
 sam_model = None
 if sam_path.exists():

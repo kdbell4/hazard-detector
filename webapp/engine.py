@@ -46,12 +46,12 @@ PROJECT_ROOT = Path(__file__).parent.parent
 HAZARD_IDS = {0, 1, 2, 3, 5, 7, 9, 10, 11, 12, 13, 14, 36}
 
 MODEL_REGISTRY = {
-    "base":      {"file": "yolov8n.pt",       "color": (0, 255, 0),   "conf": 0.50, "use_hazard_filter": True},
-    "pothole":   {"file": "best.pt",           "color": (0, 0, 255),   "conf": 0.80, "use_hazard_filter": False},
-    "rocks":     {"file": "rocks_best.pt",     "color": (0, 165, 255), "conf": 0.80, "use_hazard_filter": False},
-    "stairs":    {"file": "stairs_best.pt",    "color": (255, 0, 0),   "conf": 0.80, "use_hazard_filter": False},
-    "curb":      {"file": "curb_best.pt",      "color": (255, 255, 0), "conf": 0.80, "use_hazard_filter": False},
-    "speedbump": {"file": "speedbump_best.pt", "color": (255, 0, 255), "conf": 0.80, "use_hazard_filter": False},
+    "base":      {"file": "yolov8n.pt",              "color": (0, 255, 0),   "conf": 0.50, "use_hazard_filter": True},
+    "pothole":   {"file": "models/best.pt",           "color": (0, 0, 255),   "conf": 0.80, "use_hazard_filter": False},
+    "rocks":     {"file": "models/rocks_best.pt",     "color": (0, 165, 255), "conf": 0.80, "use_hazard_filter": False},
+    "stairs":    {"file": "models/stairs_best.pt",    "color": (255, 0, 0),   "conf": 0.80, "use_hazard_filter": False},
+    "curb":      {"file": "models/curb_best.pt",      "color": (255, 255, 0), "conf": 0.80, "use_hazard_filter": False},
+    "speedbump": {"file": "models/speedbump_best.pt", "color": (255, 0, 255), "conf": 0.80, "use_hazard_filter": False},
 }
 
 # Proximity thresholds (area_ratio)
@@ -116,19 +116,19 @@ class DetectionEngine(threading.Thread):
             except Exception as e:
                 print(f"  [ERROR] Could not load '{name}': {e}")
 
-        sam_path = PROJECT_ROOT / "mobile_sam.pt"
+        sam_path = PROJECT_ROOT / "models" / "mobile_sam.pt"
         if sam_path.exists():
             try:
                 self._sam = SAM(str(sam_path))
                 self._sam_available = True
-                print("  ✓ SAM (mobile_sam.pt)")
+                print("  ✓ SAM (models/mobile_sam.pt)")
             except Exception as e:
                 print(f"  [WARN] SAM load failed: {e} — path detection disabled")
         else:
             print(
-                "  [WARN] mobile_sam.pt not found — SAM path detection disabled.\n"
+                "  [WARN] models/mobile_sam.pt not found — SAM path detection disabled.\n"
                 "         Download it from: https://github.com/ChaoningZhang/MobileSAM\n"
-                "         Place mobile_sam.pt in the project root to enable path awareness."
+                "         Place mobile_sam.pt in the models/ folder to enable path awareness."
             )
 
     def _init_audio(self):
