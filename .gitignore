@@ -1,0 +1,37 @@
+# Auto-downloaded model (ultralytics fetches this on first run)
+yolov8n.pt
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Generated logs
+hazard_log.csv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+
+# PyTorch / Ultralytics run artifacts
+runs/

@@ -6,10 +6,15 @@ readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
     "ultralytics>=8.0.0",
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.29.0",
+    "pygame>=2.5.0",
+    "aiofiles>=23.0.0",
 ]
 
 [project.scripts]
 hazard-detector = "hazard_detector:main"
+hazard-webapp = "webapp.server:app"
 
 [build-system]
 requires = ["setuptools>=61.0"]

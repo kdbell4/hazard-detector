@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hazard Detector Dashboard</title>
+  <style>
+    /* ── Reset & base ─────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0d1117;
+      color: #e6edf3;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ───────────────────────────────────────────── */
+    header {
+      background: #161b22;
+      border-bottom: 1px solid #30363d;
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    header h1 {
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: #f0f6fc;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .live-badge {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: #3fb950;
+      background: rgba(63,185,80,0.12);
+      padding: 3px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(63,185,80,0.3);
+    }
+    .live-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: #3fb950;
+      animation: pulse 1.4s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.3; }
+    }
+    .uptime-label {
+      margin-left: auto;
+      font-size: 0.8rem;
+      color: #8b949e;
+    }
+
+    /* ── Main layout ──────────────────────────────────────── */
+    main {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr 320px;
+      grid-template-rows: 1fr auto;
+      gap: 0;
+      overflow: hidden;
+    }
+
+    /* ── Video panel ──────────────────────────────────────── */
+    .video-panel {
+      background: #000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      min-height: 400px;
+    }
+    #stream {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+    }
+    .hazard-overlay {
+      position: absolute;
+      top: 16px; left: 16px;
+      background: rgba(220,38,38,0.9);
+      color: #fff;
+      font-size: 1rem;
+      font-weight: 700;
+      padding: 8px 16px;
+      border-radius: 8px;
+      display: none;
+      align-items: center;
+      gap: 8px;
+      animation: flash 0.6s ease-in-out infinite alternate;
+    }
+    @keyframes flash {
+      from { opacity: 1; }
+      to   { opacity: 0.6; }
+    }
+
+    /* ── Sidebar ──────────────────────────────────────────── */
+    .sidebar {
+      background: #161b22;
+      border-left: 1px solid #30363d;
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+    }
+    .sidebar-section {
+      padding: 16px;
+      border-bottom: 1px solid #21262d;
+    }
+    .sidebar-section:last-child { border-bottom: none; }
+    .section-title {
+      font-size: 0.7rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #8b949e;
+      margin-bottom: 12px;
+    }
+
+    /* ── Hazard cards ─────────────────────────────────────── */
+    #hazard-list { display: flex; flex-direction: column; gap: 6px; }
+    .hazard-card {
+      background: rgba(220,38,38,0.15);
+      border: 1px solid rgba(220,38,38,0.4);
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 0.82rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .hazard-name { font-weight: 600; text-transform: capitalize; }
+    .hazard-meta { color: #8b949e; font-size: 0.75rem; }
+    .no-hazards {
+      color: #3fb950;
+      font-size: 0.85rem;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* ── Model toggles ────────────────────────────────────── */
+    .model-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 0;
+    }
+    .model-dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .model-label {
+      flex: 1;
+      font-size: 0.85rem;
+    }
+
+    /* iOS-style toggle switch */
+    .toggle { position: relative; display: inline-block; width: 40px; height: 22px; }
+    .toggle input { opacity: 0; width: 0; height: 0; }
+    .slider {
+      position: absolute; inset: 0;
+      background: #30363d;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .slider::before {
+      content: '';
+      position: absolute;
+      width: 16px; height: 16px;
+      left: 3px; bottom: 3px;
+      background: #fff;
+      border-radius: 50%;
+      transition: transform 0.2s;
+    }
+    input:checked + .slider { background: #238636; }
+    input:checked + .slider::before { transform: translateX(18px); }
+
+    /* ── Stats row ────────────────────────────────────────── */
+    .stats-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .stat-card {
+      background: #0d1117;
+      border: 1px solid #21262d;
+      border-radius: 6px;
+      padding: 10px 12px;
+      text-align: center;
+    }
+    .stat-value { font-size: 1.4rem; font-weight: 700; color: #58a6ff; }
+    .stat-label { font-size: 0.7rem; color: #8b949e; margin-top: 2px; }
+
+    /* ── Log panel ────────────────────────────────────────── */
+    .log-panel {
+      grid-column: 1 / -1;
+      background: #161b22;
+      border-top: 1px solid #30363d;
+      max-height: 220px;
+      overflow-y: auto;
+    }
+    .log-header {
+      position: sticky;
+      top: 0;
+      background: #161b22;
+      padding: 10px 16px 6px;
+      border-bottom: 1px solid #21262d;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .log-header h2 { font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #8b949e; }
+    .clear-btn {
+      font-size: 0.72rem;
+      color: #58a6ff;
+      cursor: pointer;
+      background: none;
+      border: none;
+      text-decoration: underline;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+    thead th {
+      padding: 6px 12px;
+      text-align: left;
+      color: #8b949e;
+      font-weight: 600;
+      background: #0d1117;
+      border-bottom: 1px solid #21262d;
+      position: sticky;
+      top: 42px;
+    }
+    tbody tr { border-bottom: 1px solid #21262d; }
+    tbody tr:hover { background: #1c2128; }
+    tbody td { padding: 6px 12px; }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 0.7rem;
+      font-weight: 600;
+    }
+    .badge-pothole   { background: rgba(220,38,38,0.2);   color: #ff7b7b; }
+    .badge-rocks     { background: rgba(255,165,0,0.2);   color: #ffa040; }
+    .badge-stairs    { background: rgba(70,130,255,0.2);  color: #7ab3ff; }
+    .badge-curb      { background: rgba(255,255,0,0.2);   color: #ffff70; }
+    .badge-speedbump { background: rgba(255,0,255,0.2);   color: #ff88ff; }
+    .badge-base      { background: rgba(63,185,80,0.2);   color: #3fb950; }
+    .badge-default   { background: rgba(139,148,158,0.2); color: #8b949e; }
+    .empty-log { text-align: center; padding: 24px; color: #8b949e; font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+
+<!-- ── Header ───────────────────────────────────────────────── -->
+<header>
+  <h1>🚨 Hazard Detector</h1>
+  <div class="live-badge">
+    <div class="live-dot"></div>
+    LIVE
+  </div>
+  <span class="uptime-label">Uptime: <span id="uptime">0:00:00</span></span>
+</header>
+
+<!-- ── Main ─────────────────────────────────────────────────── -->
+<main>
+
+  <!-- Video feed -->
+  <div class="video-panel">
+    <img id="stream" src="/video_feed" alt="Camera feed" />
+    <div class="hazard-overlay" id="hazard-overlay">⚠ HAZARD DETECTED</div>
+  </div>
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+
+    <!-- Current Hazards -->
+    <div class="sidebar-section">
+      <div class="section-title">Current Hazards</div>
+      <div id="hazard-list">
+        <div class="no-hazards">✓ Path clear</div>
+      </div>
+    </div>
+
+    <!-- Model Controls -->
+    <div class="sidebar-section">
+      <div class="section-title">Model Controls</div>
+
+      <div class="model-row">
+        <div class="model-dot" style="background:#3fb950"></div>
+        <span class="model-label">Base YOLO</span>
+        <label class="toggle">
+          <input type="checkbox" id="toggle-base" checked onchange="toggleModel('base', this.checked)">
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="model-row">
+        <div class="model-dot" style="background:#ff4d4d"></div>
+        <span class="model-label">Potholes</span>
+        <label class="toggle">
+          <input type="checkbox" id="toggle-pothole" checked onchange="toggleModel('pothole', this.checked)">
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="model-row">
+        <div class="model-dot" style="background:#4682ff"></div>
+        <span class="model-label">Stairs</span>
+        <label class="toggle">
+          <input type="checkbox" id="toggle-stairs" checked onchange="toggleModel('stairs', this.checked)">
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="model-row">
+        <div class="model-dot" style="background:#ffff00"></div>
+        <span class="model-label">Curbs</span>
+        <label class="toggle">
+          <input type="checkbox" id="toggle-curb" checked onchange="toggleModel('curb', this.checked)">
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="model-row">
+        <div class="model-dot" style="background:#ff00ff"></div>
+        <span class="model-label">Speed Bumps</span>
+        <label class="toggle">
+          <input type="checkbox" id="toggle-speedbump" checked onchange="toggleModel('speedbump', this.checked)">
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="model-row">
+        <div class="model-dot" style="background:#ffa040"></div>
+        <span class="model-label">Rocks</span>
+        <label class="toggle">
+          <input type="checkbox" id="toggle-rocks" onchange="toggleModel('rocks', this.checked)">
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <!-- Audio toggle -->
+      <div class="model-row" style="margin-top:8px; padding-top:8px; border-top:1px solid #21262d;">
+        <span style="font-size:1rem;">🔊</span>
+        <span class="model-label">Audio Alerts</span>
+        <label class="toggle">
+          <input type="checkbox" id="toggle-audio" checked onchange="toggleAudio(this.checked)">
+          <span class="slider"></span>
+        </label>
+      </div>
+    </div>
+
+    <!-- Stats -->
+    <div class="sidebar-section">
+      <div class="section-title">Session Stats</div>
+      <div class="stats-row">
+        <div class="stat-card">
+          <div class="stat-value" id="stat-fps">—</div>
+          <div class="stat-label">FPS</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="stat-detections">0</div>
+          <div class="stat-label">Detections</div>
+        </div>
+      </div>
+    </div>
+
+  </aside>
+
+  <!-- Detection log -->
+  <div class="log-panel">
+    <div class="log-header">
+      <h2>Detection Log</h2>
+      <button class="clear-btn" onclick="clearLog()">Clear display</button>
+    </div>
+    <div id="log-container">
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Object</th>
+            <th>Area %</th>
+            <th>In Path</th>
+            <th>Model</th>
+          </tr>
+        </thead>
+        <tbody id="log-body">
+          <tr><td colspan="5" class="empty-log">No detections yet…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</main>
+
+<script>
+  /* ── State ──────────────────────────────────────────────── */
+  let lastLogTimestamp = null;
+  let logCleared = false;
+  let knownLogEntries = [];
+
+  /* ── Helpers ────────────────────────────────────────────── */
+  function fmt(seconds) {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  }
+
+  function modelBadgeClass(model) {
+    const map = {
+      pothole: 'badge-pothole', rocks: 'badge-rocks', stairs: 'badge-stairs',
+      curb: 'badge-curb', speedbump: 'badge-speedbump', base: 'badge-base'
+    };
+    return map[model] || 'badge-default';
+  }
+
+  /* ── Status poll (500ms) ────────────────────────────────── */
+  async function pollStatus() {
+    try {
+      const data = await fetch('/api/status').then(r => r.json());
+
+      // Hazard panel
+      const list = document.getElementById('hazard-list');
+      const overlay = document.getElementById('hazard-overlay');
+      if (data.hazards && data.hazards.length > 0) {
+        overlay.style.display = 'flex';
+        list.innerHTML = data.hazards.map(h => `
+          <div class="hazard-card">
+            <span class="hazard-name">${h.label}</span>
+            <span class="hazard-meta">${h.area_pct}% · ${h.model}</span>
+          </div>`).join('');
+      } else {
+        overlay.style.display = 'none';
+        list.innerHTML = '<div class="no-hazards">✓ Path clear</div>';
+      }
+
+      // Sync model toggles from server state (source of truth)
+      if (data.model_states) {
+        for (const [model, enabled] of Object.entries(data.model_states)) {
+          const el = document.getElementById(`toggle-${model}`);
+          if (el && el.checked !== enabled) el.checked = enabled;
+        }
+      }
+      if (typeof data.audio_enabled === 'boolean') {
+        const el = document.getElementById('toggle-audio');
+        if (el && el.checked !== data.audio_enabled) el.checked = data.audio_enabled;
+      }
+
+      // Stats
+      document.getElementById('stat-fps').textContent = data.fps ?? '—';
+      document.getElementById('stat-detections').textContent = data.total_detections ?? 0;
+      document.getElementById('uptime').textContent = fmt(data.uptime_seconds ?? 0);
+    } catch(e) { /* backend not ready yet */ }
+  }
+
+  /* ── Log poll (1000ms) ──────────────────────────────────── */
+  async function pollLog() {
+    if (logCleared) return; // user cleared display — don't re-populate until next clear reset
+    try {
+      const data = await fetch('/api/log').then(r => r.json());
+      const entries = data.entries || [];
+      if (entries.length === 0) return;
+
+      // Detect new entries by checking if count changed
+      if (entries.length === knownLogEntries.length) return;
+      knownLogEntries = entries;
+
+      const tbody = document.getElementById('log-body');
+      if (entries.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" class="empty-log">No detections yet…</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = entries.map(e => `
+        <tr>
+          <td>${e.timestamp}</td>
+          <td>${e.object_type}</td>
+          <td>${(parseFloat(e.area_ratio) * 100).toFixed(1)}%</td>
+          <td>${e.in_path === 'True' ? '✓ Yes' : '✗ No'}</td>
+          <td><span class="badge ${modelBadgeClass(e.model)}">${e.model}</span></td>
+        </tr>`).join('');
+    } catch(e) {}
+  }
+
+  /* ── Toggle handlers ────────────────────────────────────── */
+  async function toggleModel(model, enabled) {
+    try {
+      await fetch('/api/toggle_model', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, enabled })
+      });
+    } catch(e) {}
+  }
+
+  async function toggleAudio(enabled) {
+    try {
+      await fetch('/api/toggle_audio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled })
+      });
+    } catch(e) {}
+  }
+
+  /* ── Clear log ──────────────────────────────────────────── */
+  function clearLog() {
+    document.getElementById('log-body').innerHTML =
+      '<tr><td colspan="5" class="empty-log">Log cleared — new detections will appear here.</td></tr>';
+    knownLogEntries = [];
+    logCleared = true;
+    setTimeout(() => { logCleared = false; }, 3000); // resume after 3s
+  }
+
+  /* ── Start polling ──────────────────────────────────────── */
+  setInterval(pollStatus, 500);
+  setInterval(pollLog, 1000);
+  pollStatus();
+  pollLog();
+</script>
+
+</body>
+</html>

@@ -1,2 +1,0 @@
-[console_scripts]
-hazard-detector = hazard_detector:main
