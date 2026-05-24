@@ -48,17 +48,6 @@ python run_webapp.py
 # then open http://localhost:8000
 ```
 
-**Webcam window:**
-```bash
-python -m hazard_detector webcam
-# press q to quit — try --camera-id 1 if camera isn't found
-```
-
-**Video file** (no webcam needed):
-```bash
-python -m hazard_detector path/to/video.mp4
-```
-
 ---
 
 ## Models
