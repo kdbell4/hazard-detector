@@ -134,7 +134,13 @@ class DetectionEngine(threading.Thread):
 
     def _init_audio(self):
         try:
+            # Prevent SDL display init — cv2 and pygame both bundle SDL2 and
+            # conflict on macOS, causing a segfault when both try to own the
+            # display. Setting these before any pygame import stops that.
+            os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+            os.environ.setdefault("SDL_AUDIODRIVER", "coreaudio")
             import pygame
+            pygame.mixer.pre_init(44100, -16, 2, 512)
             pygame.mixer.init()
             alert_path = PROJECT_ROOT / "alert.mp3"
             if alert_path.exists():
