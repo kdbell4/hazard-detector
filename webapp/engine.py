@@ -1,5 +1,21 @@
 """
 DetectionEngine — daemon thread that owns the webcam and all ML inference.
+
+Architecture
+------------
+Two inner threads run concurrently:
+
+  _capture_loop  — reads frames at camera/video frame rate, draws the most
+                   recent cached detection boxes, and streams JPEG to the
+                   browser.  Never blocks on inference.
+
+  _inference_loop — runs the ML models on the latest available frame and
+                    writes results back to a shared cache.  Runs as fast as
+                    the GPU/CPU allows; the capture thread reads whatever is
+                    there without waiting.
+
+This keeps the video smooth at full frame rate while inference updates the
+bounding boxes at whatever speed the models can manage.
 """
 
 import csv
@@ -52,18 +68,16 @@ PROXIMITY_DEFAULT = 0.08
 LABEL_COOLDOWN    = 8.0
 SAM_INTERVAL      = 5
 
-# Custom models run every Nth frame; base runs every frame.
-# Potholes/rocks/curbs etc. are mostly stationary so cached boxes stay accurate.
+# Custom models run every Nth inference frame; base runs every inference frame.
 CUSTOM_MODEL_INTERVAL = 3
 
-# Resize frames to this width before inference to reduce GPU data transfer.
+# ML inference runs on frames downscaled to this width.
 INFERENCE_WIDTH = 640
 
-# Maximum width for the streamed JPEG. 0 = use native camera resolution.
-# Inference still runs at INFERENCE_WIDTH; this only affects display quality.
+# JPEG stream is capped at this width (0 = native camera resolution).
 DISPLAY_WIDTH = 1280
 
-# JPEG quality for the MJPEG stream (0–100). Higher = sharper, larger frames.
+# JPEG compression quality for the stream (0–100).
 JPEG_QUALITY = 80
 
 
@@ -74,16 +88,29 @@ class DetectionEngine(threading.Thread):
         self._stop_event = threading.Event()
 
         self._models: dict = {}
-        self._sam          = None
+        self._sam           = None
         self._sam_available = False
+        self._path_polygon  = None   # only touched by inference thread — no lock needed
 
-        self._path_polygon  = None
-        self._frame_count   = 0
-        self._label_alert_times: dict = {}
+        # ── Shared: capture → inference ───────────────────────────────────
+        # Capture thread writes the latest raw frame here; inference reads it.
+        self._raw_frame: np.ndarray | None = None
+        self._raw_frame_id: int = 0          # incremented on every new frame
+        self._raw_lock = threading.Lock()
+
+        # ── Shared: inference → capture ───────────────────────────────────
+        # Inference thread writes results here; capture thread reads them.
+        # Boxes use normalised [0, 1] coords so they work at any display size.
+        self._det_cache: dict = {"boxes": [], "polygon": None, "has_hazard": False}
+        self._det_lock = threading.Lock()
+
+        self._inf_frame_count: int = 0
+        self._last_processed_id: int = -1
         self._cached_custom_detections: list = []
+        self._label_alert_times: dict = {}
         self._fps_times: deque = deque(maxlen=30)
 
-        # Persistent thread pool — created once, reused every frame
+        # Persistent thread pool — reused every inference frame
         self._executor = ThreadPoolExecutor(max_workers=6)
 
         self._alert_sound = None
@@ -146,7 +173,7 @@ class DetectionEngine(threading.Thread):
         print(f"  ✓ CSV log → {self._log_path}")
 
     # ------------------------------------------------------------------ #
-    # Main loop                                                           #
+    # Entry point                                                         #
     # ------------------------------------------------------------------ #
 
     def run(self):
@@ -167,8 +194,8 @@ class DetectionEngine(threading.Thread):
             cap = cv2.VideoCapture(source, cv2.CAP_AVFOUNDATION)
             if not cap.isOpened():
                 cap = cv2.VideoCapture(source)
-            # Keep only the most-recent frame in the OS buffer so we never
-            # read a stale frame that accumulated while inference was running.
+            # Keep only 1 frame in the OS buffer so we always read the
+            # most recent frame rather than one that's several frames old.
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         else:
             cap = cv2.VideoCapture(source)
@@ -179,20 +206,102 @@ class DetectionEngine(threading.Thread):
 
         is_video_file = isinstance(source, str)
 
+        # Inference runs on its own thread so it never stalls the stream.
+        inf_thread = threading.Thread(target=self._inference_loop, daemon=True)
+        inf_thread.start()
+
+        self._capture_loop(cap, is_video_file)
+
+        cap.release()
+        print("DetectionEngine stopped.")
+
+    # ------------------------------------------------------------------ #
+    # Capture loop — fast, runs at camera/video frame rate               #
+    # ------------------------------------------------------------------ #
+
+    def _capture_loop(self, cap, is_video_file: bool):
         while not self._stop_event.is_set():
             ret, frame = cap.read()
             if not ret:
                 if is_video_file:
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # loop
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)   # loop video
                 else:
                     time.sleep(0.05)
                 continue
 
+            current_time = time.time()
             h_orig, w_orig = frame.shape[:2]
+
+            # Hand the raw frame off to the inference thread.
+            with self._raw_lock:
+                self._raw_frame    = frame          # inference will copy before use
+                self._raw_frame_id += 1
+
+            # Scale to display resolution.
+            if DISPLAY_WIDTH and w_orig > DISPLAY_WIDTH:
+                disp_scale = DISPLAY_WIDTH / w_orig
+                disp = cv2.resize(frame, (DISPLAY_WIDTH, int(h_orig * disp_scale)))
+            else:
+                disp = frame.copy()
+            h, w = disp.shape[:2]
+
+            # Overlay the most recent detection results (non-blocking read).
+            with self._det_lock:
+                cache = self._det_cache          # safe: dict replaced atomically below
+
+            poly_norm = cache["polygon"]
+            if poly_norm is not None:
+                # Polygon stored as normalised [0,1] — scale to display pixels.
+                poly_px = (poly_norm * np.array([w, h])).astype(np.int32).reshape((-1, 1, 2))
+                cv2.polylines(disp, [poly_px], isClosed=True, color=(0, 255, 100), thickness=2)
+
+            for box in cache["boxes"]:
+                x1 = int(box["rx1"] * w);  y1 = int(box["ry1"] * h)
+                x2 = int(box["rx2"] * w);  y2 = int(box["ry2"] * h)
+                color = (0, 0, 255) if box["is_hazard"] else box["color"]
+                lbl   = f"{'HAZARD: ' if box['is_hazard'] else ''}{box['label']} {box['conf']:.0%}"
+                cv2.rectangle(disp, (x1, y1), (x2, y2), color, 2)
+                cv2.putText(disp, lbl, (x1, y1 - 8),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+
+            if cache["has_hazard"]:
+                cv2.putText(disp, "⚠ HAZARD DETECTED", (30, 50),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0, 0, 255), 3)
+
+            _, jpeg = cv2.imencode(".jpg", disp, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+            self._state.set_frame(jpeg.tobytes())
+
+            # FPS reflects what the user actually sees (capture rate).
+            self._fps_times.append(current_time)
+            if len(self._fps_times) >= 2:
+                elapsed = self._fps_times[-1] - self._fps_times[0]
+                if elapsed > 0:
+                    self._state.set_fps(len(self._fps_times) / elapsed)
+
+    # ------------------------------------------------------------------ #
+    # Inference loop — slower, runs models and updates detection cache    #
+    # ------------------------------------------------------------------ #
+
+    def _inference_loop(self):
+        while not self._stop_event.is_set():
+            # Grab the latest raw frame (only if it's newer than last processed).
+            frame = None
+            with self._raw_lock:
+                if (self._raw_frame is not None
+                        and self._raw_frame_id != self._last_processed_id):
+                    frame = self._raw_frame.copy()
+                    fid   = self._raw_frame_id
+
+            if frame is None:
+                time.sleep(0.001)   # no new frame yet — yield briefly
+                continue
+
+            self._last_processed_id = fid
             current_time = time.time()
 
-            # ── Inference frame (small, fast) ─────────────────────────────
-            # All ML runs on this downscaled copy to keep GPU transfer cheap.
+            h_orig, w_orig = frame.shape[:2]
+
+            # Downscale for inference.
             if w_orig > INFERENCE_WIDTH:
                 inf_scale = INFERENCE_WIDTH / w_orig
                 inf_frame = cv2.resize(frame, (INFERENCE_WIDTH, int(h_orig * inf_scale)))
@@ -201,66 +310,44 @@ class DetectionEngine(threading.Thread):
                 inf_frame = frame
             h_inf, w_inf = inf_frame.shape[:2]
 
-            # ── Display frame (higher quality) ────────────────────────────
-            # Annotations are drawn on this larger copy for a crisp stream.
-            if DISPLAY_WIDTH and w_orig > DISPLAY_WIDTH:
-                disp_scale = DISPLAY_WIDTH / w_orig
-                disp_frame = cv2.resize(frame, (DISPLAY_WIDTH, int(h_orig * disp_scale)))
-            else:
-                disp_frame = frame.copy()
-                disp_scale = 1.0
-            h, w = disp_frame.shape[:2]
-            annotated = disp_frame
-
-            # Scale factors to convert inference coords → display coords
-            sx = w / w_inf
-            sy = h / h_inf
-
-            # SAM path segmentation (runs on inference-sized frame)
-            if self._sam_available and self._frame_count % SAM_INTERVAL == 0:
+            # SAM path segmentation.
+            if self._sam_available and self._inf_frame_count % SAM_INTERVAL == 0:
                 self._update_path_polygon(inf_frame, h_inf, w_inf)
-            if self._path_polygon is not None:
-                # polygon is in inference coords — scale up for drawing
-                poly_disp = self._path_polygon * np.array([sx, sy])
-                pts = poly_disp.astype(np.int32).reshape((-1, 1, 2))
-                cv2.polylines(annotated, [pts], isClosed=True, color=(0, 255, 100), thickness=2)
 
-            # Inference: base every frame, custom models every 3rd frame
-            run_custom     = (self._frame_count % CUSTOM_MODEL_INTERVAL == 0)
+            # Run YOLO models.
+            run_custom     = (self._inf_frame_count % CUSTOM_MODEL_INTERVAL == 0)
             all_detections = self._run_models(inf_frame, run_custom)
 
-            # Hazard evaluation
+            # Evaluate each detection.
             hazards_this_frame: list[dict] = []
-            log_entries: list[dict] = []
+            log_entries:        list[dict] = []
+            boxes_for_cache:    list[dict] = []
 
             for det in all_detections:
-                # Raw coords are in inference space
                 ix1, iy1, ix2, iy2 = det["xyxy"]
 
-                # Scale to display space for drawing
-                x1 = int(ix1 * sx);  y1 = int(iy1 * sy)
-                x2 = int(ix2 * sx);  y2 = int(iy2 * sy)
-
-                area_ratio = ((x2 - x1) * (y2 - y1)) / (w * h)
-                label      = det["label"]
+                # Normalise coords to [0,1] — display thread scales them back up.
+                rx1 = ix1 / w_inf;  ry1 = iy1 / h_inf
+                rx2 = ix2 / w_inf;  ry2 = iy2 / h_inf
+                area_ratio = (rx2 - rx1) * (ry2 - ry1)
+                label = det["label"]
 
                 too_close = area_ratio > (PROXIMITY_PERSON if label == "person" else PROXIMITY_DEFAULT)
 
-                # Path test uses inference coords (polygon is in that space)
                 bottom_center_inf = (int((ix1 + ix2) / 2), iy2)
                 in_path = (
                     cv2.pointPolygonTest(self._path_polygon, bottom_center_inf, False) >= 0
                     if self._path_polygon is not None else True
                 )
 
-                low       = iy2 > h_inf * 0.6   # use inference height
+                low       = iy2 > h_inf * 0.6
                 is_hazard = too_close and in_path and low
 
-                color       = (0, 0, 255) if is_hazard else det["color"]
-                display_lbl = f"{'HAZARD: ' if is_hazard else ''}{label} {det['conf']:.0%}"
-                cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(annotated, display_lbl, (x1, y1 - 8),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+                boxes_for_cache.append({
+                    "rx1": rx1, "ry1": ry1, "rx2": rx2, "ry2": ry2,
+                    "label": label, "conf": det["conf"],
+                    "color": det["color"], "is_hazard": is_hazard,
+                })
 
                 if is_hazard:
                     hazards_this_frame.append({
@@ -268,12 +355,27 @@ class DetectionEngine(threading.Thread):
                         "area_pct": round(area_ratio * 100, 1), "in_path": in_path,
                     })
                     log_entries.append({
-                        "timestamp": datetime.now().strftime("%H:%M:%S"),
-                        "object_type": label, "area_ratio": f"{area_ratio:.4f}",
-                        "in_path": str(in_path), "model": det["model_name"],
+                        "timestamp":   datetime.now().strftime("%H:%M:%S"),
+                        "object_type": label,
+                        "area_ratio":  f"{area_ratio:.4f}",
+                        "in_path":     str(in_path),
+                        "model":       det["model_name"],
                     })
 
-            # Alerts
+            # Build normalised polygon for the display thread.
+            polygon_norm = None
+            if self._path_polygon is not None:
+                polygon_norm = self._path_polygon / np.array([w_inf, h_inf])
+
+            # Atomically replace the detection cache (display thread reads this).
+            with self._det_lock:
+                self._det_cache = {
+                    "boxes":      boxes_for_cache,
+                    "polygon":    polygon_norm,
+                    "has_hazard": bool(hazards_this_frame),
+                }
+
+            # Alerts & logging.
             if hazards_this_frame:
                 for hazard in hazards_this_frame:
                     lbl = hazard["label"]
@@ -284,25 +386,9 @@ class DetectionEngine(threading.Thread):
                 self._write_csv(log_entries)
                 for entry in log_entries:
                     self._state.add_log_entry(entry)
-                cv2.putText(annotated, "⚠ HAZARD DETECTED", (30, 50),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0, 0, 255), 3)
 
-            # Update shared state
             self._state.set_current_hazards(hazards_this_frame)
-            _, jpeg = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
-            self._state.set_frame(jpeg.tobytes())
-
-            # FPS tracking
-            self._fps_times.append(current_time)
-            if len(self._fps_times) >= 2:
-                elapsed = self._fps_times[-1] - self._fps_times[0]
-                if elapsed > 0:
-                    self._state.set_fps(len(self._fps_times) / elapsed)
-
-            self._frame_count += 1
-
-        cap.release()
-        print("DetectionEngine stopped.")
+            self._inf_frame_count += 1
 
     # ------------------------------------------------------------------ #
     # SAM                                                                 #
@@ -318,7 +404,7 @@ class DetectionEngine(threading.Thread):
             pass
 
     # ------------------------------------------------------------------ #
-    # Inference                                                           #
+    # Inference helpers                                                   #
     # ------------------------------------------------------------------ #
 
     def _run_one_model(self, name: str, cfg: dict, frame) -> list[dict]:
@@ -357,7 +443,7 @@ class DetectionEngine(threading.Thread):
 
         if DEVICE == "mps":
             # MPS is not thread-safe — concurrent kernel launches from
-            # multiple threads cause a segfault. Run models serially instead.
+            # multiple threads cause a segfault. Run models serially.
             for name, cfg in to_run.items():
                 dets = self._run_one_model(name, cfg, frame)
                 (base_results if name == "base" else custom_results).extend(dets)
