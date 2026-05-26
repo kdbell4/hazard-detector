@@ -121,7 +121,7 @@ class DetectionEngine(threading.Thread):
     def _init_audio(self):
         try:
             import pygame
-            pygame.mixer.pre_init(44100, -16, 2, 512)
+            pygame.mixer.pre_init(44100, -16, 2, 256)
             pygame.mixer.init()
             alert_path = PROJECT_ROOT / "alert.mp3"
             if alert_path.exists():
