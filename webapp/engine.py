@@ -315,16 +315,24 @@ class DetectionEngine(threading.Thread):
         if not to_run:
             return []
 
-        futures = {
-            self._executor.submit(self._run_one_model, name, cfg, frame): name
-            for name, cfg in to_run.items()
-        }
-
         base_results, custom_results = [], []
-        for future in as_completed(futures):
-            name = futures[future]
-            dets = future.result()
-            (base_results if name == "base" else custom_results).extend(dets)
+
+        if DEVICE == "mps":
+            # MPS is not thread-safe — concurrent kernel launches from
+            # multiple threads cause a segfault. Run models serially instead.
+            for name, cfg in to_run.items():
+                dets = self._run_one_model(name, cfg, frame)
+                (base_results if name == "base" else custom_results).extend(dets)
+        else:
+            # CPU / CUDA: safe to parallelise
+            futures = {
+                self._executor.submit(self._run_one_model, name, cfg, frame): name
+                for name, cfg in to_run.items()
+            }
+            for future in as_completed(futures):
+                name = futures[future]
+                dets = future.result()
+                (base_results if name == "base" else custom_results).extend(dets)
 
         if run_custom:
             self._cached_custom_detections = custom_results
