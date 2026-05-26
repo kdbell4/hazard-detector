@@ -8,6 +8,7 @@ Combines logic from:
 """
 
 import csv
+import os
 import threading
 import time
 from collections import deque
@@ -159,19 +160,38 @@ class DetectionEngine(threading.Thread):
         self._load_models()
         self._init_audio()
         self._init_csv()
-        print("Initialisation complete. Starting webcam…\n")
 
-        cap = cv2.VideoCapture(0, cv2.CAP_AVFOUNDATION)
+        # Resolve source: env var → int (camera ID) or str (video file path)
+        source_str = os.environ.get("HAZARD_SOURCE", "0")
+        try:
+            source = int(source_str)
+            source_label = f"camera {source}"
+        except ValueError:
+            source = source_str
+            source_label = f"video file: {source}"
+
+        print(f"Initialisation complete. Opening {source_label}…\n")
+
+        if isinstance(source, int):
+            cap = cv2.VideoCapture(source, cv2.CAP_AVFOUNDATION)
+            if not cap.isOpened():
+                cap = cv2.VideoCapture(source)
+        else:
+            cap = cv2.VideoCapture(source)
+
         if not cap.isOpened():
-            print("[ERROR] Could not open camera. Trying default backend…")
-            cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
-            print("[ERROR] Camera unavailable — engine shutting down.")
+            print(f"[ERROR] Could not open source '{source}' — engine shutting down.")
             return
+
+        is_video_file = isinstance(source, str)
 
         while not self._stop_event.is_set():
             ret, frame = cap.read()
             if not ret:
+                if is_video_file:
+                    # Loop the video back to the start
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    continue
                 time.sleep(0.05)
                 continue
 

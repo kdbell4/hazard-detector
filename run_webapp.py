@@ -2,12 +2,27 @@
 Entry point for the Hazard Detection web dashboard.
 
 Usage:
-    python run_webapp.py
+    python run_webapp.py                       # webcam (default)
+    python run_webapp.py --source 1            # external webcam
+    python run_webapp.py --source video.mp4    # video file
 
 Then open http://localhost:8000 in your browser.
 """
 
+import argparse
+import os
 import uvicorn
+
+parser = argparse.ArgumentParser(description="Hazard Detector Web Dashboard")
+parser.add_argument(
+    "--source",
+    default="0",
+    help="Camera ID (0, 1, …) or path to a video file (e.g. test.mp4). Default: 0",
+)
+args = parser.parse_args()
+
+# Pass the source to the engine via environment variable
+os.environ["HAZARD_SOURCE"] = args.source
 
 if __name__ == "__main__":
     uvicorn.run(
