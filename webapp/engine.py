@@ -74,8 +74,10 @@ CUSTOM_MODEL_INTERVAL = 3
 # ML inference runs on frames downscaled to this width.
 INFERENCE_WIDTH = 640
 
-# JPEG stream is capped at this width (0 = native camera resolution).
-DISPLAY_WIDTH = 1280
+# JPEG stream is capped to fit within this bounding box (aspect ratio preserved).
+# Prevents portrait phone videos from sending huge frames to the browser.
+DISPLAY_MAX_W = 1280
+DISPLAY_MAX_H = 720
 
 # JPEG compression quality for the stream (0–100).
 JPEG_QUALITY = 80
@@ -220,11 +222,24 @@ class DetectionEngine(threading.Thread):
     # ------------------------------------------------------------------ #
 
     def _capture_loop(self, cap, is_video_file: bool):
+        # For video files, throttle reads to the file's native frame rate so
+        # the stream plays back at real speed rather than as fast as possible.
+        if is_video_file:
+            video_fps = cap.get(cv2.CAP_PROP_FPS)
+            if not (1 <= video_fps <= 120):
+                video_fps = 30.0
+            frame_interval = 1.0 / video_fps
+        else:
+            frame_interval = 0.0
+
+        next_frame_time = time.time()
+
         while not self._stop_event.is_set():
             ret, frame = cap.read()
             if not ret:
                 if is_video_file:
                     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)   # loop video
+                    next_frame_time = time.time()          # reset timing on loop
                 else:
                     time.sleep(0.05)
                 continue
@@ -237,13 +252,21 @@ class DetectionEngine(threading.Thread):
                 self._raw_frame    = frame          # inference will copy before use
                 self._raw_frame_id += 1
 
-            # Scale to display resolution.
-            if DISPLAY_WIDTH and w_orig > DISPLAY_WIDTH:
-                disp_scale = DISPLAY_WIDTH / w_orig
-                disp = cv2.resize(frame, (DISPLAY_WIDTH, int(h_orig * disp_scale)))
+            # Scale to display resolution, capping both width and height so
+            # portrait phone videos don't send huge frames to the browser.
+            scale = min(DISPLAY_MAX_W / w_orig, DISPLAY_MAX_H / h_orig, 1.0)
+            if scale < 1.0:
+                disp = cv2.resize(frame, (int(w_orig * scale), int(h_orig * scale)))
             else:
                 disp = frame.copy()
             h, w = disp.shape[:2]
+
+            # Throttle to video frame rate (no-op for webcam).
+            if is_video_file:
+                next_frame_time += frame_interval
+                sleep_time = next_frame_time - time.time()
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
 
             # Overlay the most recent detection results (non-blocking read).
             with self._det_lock:
