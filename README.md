@@ -48,6 +48,24 @@ python run_webapp.py
 # then open http://localhost:8000
 ```
 
+**With a video file instead of a webcam:**
+```bash
+python run_webapp.py --source test_video.mp4
+# then open http://localhost:8000
+```
+The video loops automatically. Good for testing without a scooter.
+
+**With an external webcam:**
+```bash
+python run_webapp.py --source 1
+```
+
+**Webcam window (no browser):**
+```bash
+python -m hazard_detector webcam
+# press q to quit
+```
+
 ---
 
 ## Models
