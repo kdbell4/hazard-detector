@@ -59,8 +59,8 @@ MODEL_REGISTRY = {
 PROXIMITY_PERSON  = 0.30
 PROXIMITY_DEFAULT = 0.08
 
-# Alert cooldown
-ALERT_COOLDOWN = 2.0
+# Per-label alert cooldown — how long before the same object type can alert again
+LABEL_COOLDOWN = 8.0
 
 # SAM segmentation interval (every N frames)
 SAM_INTERVAL = 5
@@ -80,7 +80,7 @@ class DetectionEngine(threading.Thread):
         # Detection state
         self._path_polygon = None
         self._frame_count = 0
-        self._last_alert_time = 0.0
+        self._label_alert_times: dict = {}   # label -> last time it was alerted
         self._fps_times: deque = deque(maxlen=30)
 
         # Audio
@@ -191,15 +191,35 @@ class DetectionEngine(threading.Thread):
 
         is_video_file = isinstance(source, str)
 
+        # For video files: track real-time position so we can skip frames
+        # and keep playback speed in sync with the original video FPS.
+        video_fps = cap.get(cv2.CAP_PROP_FPS) if is_video_file else 0
+        video_start_wall = time.time()
+        video_frames_read = 0
+
         while not self._stop_event.is_set():
             ret, frame = cap.read()
             if not ret:
                 if is_video_file:
-                    # Loop the video back to the start
+                    # Loop back to the start and reset timing
                     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    video_start_wall = time.time()
+                    video_frames_read = 0
                     continue
                 time.sleep(0.05)
                 continue
+
+            video_frames_read += 1
+
+            # ── Frame skipping for video files ────────────────────────── #
+            # If inference is slower than the video's native FPS, skip ahead
+            # so playback stays in sync with real time.
+            if is_video_file and video_fps > 0:
+                expected = int((time.time() - video_start_wall) * video_fps)
+                skip = expected - video_frames_read
+                for _ in range(max(0, min(skip, 8))):   # cap at 8 skipped frames
+                    cap.read()
+                    video_frames_read += 1
 
             h, w = frame.shape[:2]
             annotated = frame.copy()
@@ -266,9 +286,16 @@ class DetectionEngine(threading.Thread):
 
             # ── Alerts & logging ───────────────────────────────────── #
             if hazards_this_frame:
-                if (current_time - self._last_alert_time) >= ALERT_COOLDOWN:
-                    self._play_audio()
-                    self._last_alert_time = current_time
+                # Fire audio only for labels that haven't alerted recently.
+                # This means each object type alerts once when it first
+                # appears, then goes quiet until it's been gone long enough.
+                for hazard in hazards_this_frame:
+                    lbl = hazard["label"]
+                    last = self._label_alert_times.get(lbl, 0)
+                    if current_time - last >= LABEL_COOLDOWN:
+                        self._play_audio()
+                        self._label_alert_times[lbl] = current_time
+                        break   # one sound at a time; next new label fires next frame
 
                 self._write_csv(log_entries)
                 for entry in log_entries:
