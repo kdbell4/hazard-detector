@@ -338,6 +338,11 @@ class DetectionEngine(threading.Thread):
     def _play_audio(self):
         if not self._state.is_audio_enabled() or self._alert_sound is None:
             return
+        # Delay the sound slightly so it lands when the annotated frame
+        # reaches the browser (encode + stream + render ≈ 150ms on localhost).
+        threading.Timer(0.15, self._fire_audio).start()
+
+    def _fire_audio(self):
         try:
             import pygame
             if not pygame.mixer.get_busy():
