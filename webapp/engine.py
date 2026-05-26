@@ -59,6 +59,13 @@ CUSTOM_MODEL_INTERVAL = 3
 # Resize frames to this width before inference to reduce GPU data transfer.
 INFERENCE_WIDTH = 640
 
+# Maximum width for the streamed JPEG. 0 = use native camera resolution.
+# Inference still runs at INFERENCE_WIDTH; this only affects display quality.
+DISPLAY_WIDTH = 1280
+
+# JPEG quality for the MJPEG stream (0–100). Higher = sharper, larger frames.
+JPEG_QUALITY = 80
+
 
 class DetectionEngine(threading.Thread):
     def __init__(self, state: SharedState):
@@ -160,6 +167,9 @@ class DetectionEngine(threading.Thread):
             cap = cv2.VideoCapture(source, cv2.CAP_AVFOUNDATION)
             if not cap.isOpened():
                 cap = cv2.VideoCapture(source)
+            # Keep only the most-recent frame in the OS buffer so we never
+            # read a stale frame that accumulated while inference was running.
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         else:
             cap = cv2.VideoCapture(source)
 
@@ -178,44 +188,72 @@ class DetectionEngine(threading.Thread):
                     time.sleep(0.05)
                 continue
 
-            # Resize for inference — reduces GPU data transfer cost.
-            # All inference and drawing happens on the smaller frame.
             h_orig, w_orig = frame.shape[:2]
-            if w_orig > INFERENCE_WIDTH:
-                scale = INFERENCE_WIDTH / w_orig
-                frame = cv2.resize(frame, (INFERENCE_WIDTH, int(h_orig * scale)))
-
-            h, w       = frame.shape[:2]
-            annotated  = frame.copy()
             current_time = time.time()
 
-            # SAM path segmentation
+            # ── Inference frame (small, fast) ─────────────────────────────
+            # All ML runs on this downscaled copy to keep GPU transfer cheap.
+            if w_orig > INFERENCE_WIDTH:
+                inf_scale = INFERENCE_WIDTH / w_orig
+                inf_frame = cv2.resize(frame, (INFERENCE_WIDTH, int(h_orig * inf_scale)))
+            else:
+                inf_scale = 1.0
+                inf_frame = frame
+            h_inf, w_inf = inf_frame.shape[:2]
+
+            # ── Display frame (higher quality) ────────────────────────────
+            # Annotations are drawn on this larger copy for a crisp stream.
+            if DISPLAY_WIDTH and w_orig > DISPLAY_WIDTH:
+                disp_scale = DISPLAY_WIDTH / w_orig
+                disp_frame = cv2.resize(frame, (DISPLAY_WIDTH, int(h_orig * disp_scale)))
+            else:
+                disp_frame = frame.copy()
+                disp_scale = 1.0
+            h, w = disp_frame.shape[:2]
+            annotated = disp_frame
+
+            # Scale factors to convert inference coords → display coords
+            sx = w / w_inf
+            sy = h / h_inf
+
+            # SAM path segmentation (runs on inference-sized frame)
             if self._sam_available and self._frame_count % SAM_INTERVAL == 0:
-                self._update_path_polygon(frame, h, w)
+                self._update_path_polygon(inf_frame, h_inf, w_inf)
             if self._path_polygon is not None:
-                pts = self._path_polygon.astype(np.int32).reshape((-1, 1, 2))
+                # polygon is in inference coords — scale up for drawing
+                poly_disp = self._path_polygon * np.array([sx, sy])
+                pts = poly_disp.astype(np.int32).reshape((-1, 1, 2))
                 cv2.polylines(annotated, [pts], isClosed=True, color=(0, 255, 100), thickness=2)
 
             # Inference: base every frame, custom models every 3rd frame
-            run_custom   = (self._frame_count % CUSTOM_MODEL_INTERVAL == 0)
-            all_detections = self._run_models(frame, run_custom)
+            run_custom     = (self._frame_count % CUSTOM_MODEL_INTERVAL == 0)
+            all_detections = self._run_models(inf_frame, run_custom)
 
             # Hazard evaluation
             hazards_this_frame: list[dict] = []
             log_entries: list[dict] = []
 
             for det in all_detections:
-                x1, y1, x2, y2 = det["xyxy"]
+                # Raw coords are in inference space
+                ix1, iy1, ix2, iy2 = det["xyxy"]
+
+                # Scale to display space for drawing
+                x1 = int(ix1 * sx);  y1 = int(iy1 * sy)
+                x2 = int(ix2 * sx);  y2 = int(iy2 * sy)
+
                 area_ratio = ((x2 - x1) * (y2 - y1)) / (w * h)
                 label      = det["label"]
 
-                too_close     = area_ratio > (PROXIMITY_PERSON if label == "person" else PROXIMITY_DEFAULT)
-                bottom_center = (int((x1 + x2) / 2), y2)
-                in_path       = (
-                    cv2.pointPolygonTest(self._path_polygon, bottom_center, False) >= 0
+                too_close = area_ratio > (PROXIMITY_PERSON if label == "person" else PROXIMITY_DEFAULT)
+
+                # Path test uses inference coords (polygon is in that space)
+                bottom_center_inf = (int((ix1 + ix2) / 2), iy2)
+                in_path = (
+                    cv2.pointPolygonTest(self._path_polygon, bottom_center_inf, False) >= 0
                     if self._path_polygon is not None else True
                 )
-                low       = y2 > h * 0.6
+
+                low       = iy2 > h_inf * 0.6   # use inference height
                 is_hazard = too_close and in_path and low
 
                 color       = (0, 0, 255) if is_hazard else det["color"]
@@ -251,7 +289,7 @@ class DetectionEngine(threading.Thread):
 
             # Update shared state
             self._state.set_current_hazards(hazards_this_frame)
-            _, jpeg = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 65])
+            _, jpeg = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
             self._state.set_frame(jpeg.tobytes())
 
             # FPS tracking
