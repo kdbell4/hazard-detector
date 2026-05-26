@@ -60,11 +60,6 @@ The video loops automatically. Good for testing without a scooter.
 python run_webapp.py --source 1
 ```
 
-**Webcam window (no browser):**
-```bash
-python -m hazard_detector webcam
-# press q to quit
-```
 
 ---
 
