@@ -14,6 +14,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+# Prevent OpenCV's thread pool from conflicting with PyTorch's on macOS
+cv2.setNumThreads(1)
+
 from webapp.state import SharedState
 
 
@@ -117,8 +120,6 @@ class DetectionEngine(threading.Thread):
 
     def _init_audio(self):
         try:
-            os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-            os.environ.setdefault("SDL_AUDIODRIVER", "coreaudio")
             import pygame
             pygame.mixer.pre_init(44100, -16, 2, 512)
             pygame.mixer.init()

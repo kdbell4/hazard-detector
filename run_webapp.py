@@ -9,8 +9,17 @@ Usage:
 Then open http://localhost:8000 in your browser.
 """
 
-import argparse
 import os
+
+# Must be set before cv2, pygame, or torch are imported anywhere.
+# cv2 and pygame both bundle SDL2 — without this they fight over the
+# display on macOS and cause a segfault.
+os.environ["SDL_VIDEODRIVER"]            = "dummy"
+os.environ["SDL_AUDIODRIVER"]            = "coreaudio"
+# Fall back to CPU for any MPS ops not supported on this chip.
+os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+
+import argparse
 import uvicorn
 
 parser = argparse.ArgumentParser(description="Hazard Detector Web Dashboard")
