@@ -65,6 +65,36 @@ LABEL_COOLDOWN = 8.0
 # SAM segmentation interval (every N frames)
 SAM_INTERVAL = 5
 
+# Custom models run every Nth frame; base model runs every frame.
+# Cached custom detections are reused in between.
+CUSTOM_MODEL_INTERVAL = 3
+
+# Max width to resize frames to before inference (reduces data transfer to GPU)
+INFERENCE_WIDTH = 640
+
+
+# ─────────────────────────────────────────────
+# Latest-frame buffer
+# Capture thread always writes the newest frame here.
+# Inference thread reads it without ever blocking on cap.read().
+# ─────────────────────────────────────────────
+class _FrameBuffer:
+    def __init__(self):
+        self._frame = None
+        self._lock  = threading.Lock()
+        self._ready = threading.Event()
+
+    def put(self, frame):
+        with self._lock:
+            self._frame = frame
+        self._ready.set()
+
+    def get(self, timeout: float = 1.0):
+        self._ready.wait(timeout)
+        self._ready.clear()
+        with self._lock:
+            return self._frame
+
 
 class DetectionEngine(threading.Thread):
     def __init__(self, state: SharedState):
@@ -79,9 +109,13 @@ class DetectionEngine(threading.Thread):
 
         # Detection state
         self._path_polygon = None
-        self._frame_count = 0
-        self._label_alert_times: dict = {}   # label -> last time it was alerted
+        self._frame_count  = 0
+        self._label_alert_times: dict  = {}   # label -> last alert time
+        self._last_custom_detections: list = [] # cached between custom model runs
         self._fps_times: deque = deque(maxlen=30)
+
+        # Persistent thread pool — created once, reused every frame
+        self._executor = ThreadPoolExecutor(max_workers=6)
 
         # Audio
         self._alert_sound = None
@@ -95,6 +129,7 @@ class DetectionEngine(threading.Thread):
 
     def stop(self):
         self._stop_event.set()
+        self._executor.shutdown(wait=False)
 
     # ------------------------------------------------------------------ #
     # Initialisation helpers (called inside run() so they're on our thread)
@@ -190,51 +225,77 @@ class DetectionEngine(threading.Thread):
             return
 
         is_video_file = isinstance(source, str)
-
-        # For video files: track real-time position so we can skip frames
-        # and keep playback speed in sync with the original video FPS.
         video_fps = cap.get(cv2.CAP_PROP_FPS) if is_video_file else 0
-        video_start_wall = time.time()
-        video_frames_read = 0
 
-        while not self._stop_event.is_set():
-            ret, frame = cap.read()
-            if not ret:
-                if is_video_file:
-                    # Loop back to the start and reset timing
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                    video_start_wall = time.time()
-                    video_frames_read = 0
+        # ── Dedicated capture thread ───────────────────────────────────── #
+        # Reads frames continuously so the inference loop always has the
+        # freshest frame ready and never blocks on cap.read().
+        buf = _FrameBuffer()
+        video_start_wall  = [time.time()]
+        video_frames_read = [0]
+
+        def _capture_loop():
+            while not self._stop_event.is_set():
+                ret, frame = cap.read()
+                if not ret:
+                    if is_video_file:
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        video_start_wall[0]  = time.time()
+                        video_frames_read[0] = 0
+                    else:
+                        time.sleep(0.01)
                     continue
-                time.sleep(0.05)
+
+                video_frames_read[0] += 1
+
+                # Skip frames for video files to stay in real-time
+                if is_video_file and video_fps > 0:
+                    expected = int((time.time() - video_start_wall[0]) * video_fps)
+                    skip = expected - video_frames_read[0]
+                    for _ in range(max(0, min(skip, 8))):
+                        cap.read()
+                        video_frames_read[0] += 1
+
+                buf.put(frame)
+
+        capture_thread = threading.Thread(target=_capture_loop, daemon=True)
+        capture_thread.start()
+
+        # ── Inference loop ─────────────────────────────────────────────── #
+        while not self._stop_event.is_set():
+            frame = buf.get(timeout=1.0)
+            if frame is None:
                 continue
 
-            video_frames_read += 1
+            # Resize for faster inference — YOLO still gets imgsz=320 input
+            # but we reduce the frame before handing it over, cutting data
+            # transfer and pre-processing time significantly.
+            h_orig, w_orig = frame.shape[:2]
+            if w_orig > INFERENCE_WIDTH:
+                scale  = INFERENCE_WIDTH / w_orig
+                frame_small = cv2.resize(frame, (INFERENCE_WIDTH, int(h_orig * scale)))
+            else:
+                scale = 1.0
+                frame_small = frame
 
-            # ── Frame skipping for video files ────────────────────────── #
-            # If inference is slower than the video's native FPS, skip ahead
-            # so playback stays in sync with real time.
-            if is_video_file and video_fps > 0:
-                expected = int((time.time() - video_start_wall) * video_fps)
-                skip = expected - video_frames_read
-                for _ in range(max(0, min(skip, 8))):   # cap at 8 skipped frames
-                    cap.read()
-                    video_frames_read += 1
-
-            h, w = frame.shape[:2]
-            annotated = frame.copy()
+            h, w = frame_small.shape[:2]
+            annotated    = frame_small.copy()
             current_time = time.time()
 
             # ── SAM path segmentation ──────────────────────────────── #
             if self._sam_available and self._frame_count % SAM_INTERVAL == 0:
-                self._update_path_polygon(frame, h, w)
+                self._update_path_polygon(frame_small, h, w)
 
             if self._path_polygon is not None:
                 pts = self._path_polygon.astype(np.int32).reshape((-1, 1, 2))
                 cv2.polylines(annotated, [pts], isClosed=True, color=(0, 255, 100), thickness=2)
 
-            # ── YOLO inference across enabled models ───────────────── #
-            all_detections = self._run_all_models(frame)
+            # ── YOLO inference ─────────────────────────────────────── #
+            # Base model runs every frame.
+            # Custom models run every CUSTOM_MODEL_INTERVAL frames; last
+            # known results are reused in between so detections stay visible.
+            run_custom = (self._frame_count % CUSTOM_MODEL_INTERVAL == 0)
+            all_detections = self._run_models(frame_small, run_custom=run_custom)
 
             # ── Per-detection hazard evaluation ───────────────────── #
             hazards_this_frame: list[dict] = []
@@ -242,19 +303,17 @@ class DetectionEngine(threading.Thread):
 
             for det in all_detections:
                 x1, y1, x2, y2 = det["xyxy"]
-                box_area  = (x2 - x1) * (y2 - y1)
+                box_area   = (x2 - x1) * (y2 - y1)
                 area_ratio = box_area / (w * h)
                 label      = det["label"]
 
                 too_close = area_ratio > (PROXIMITY_PERSON if label == "person" else PROXIMITY_DEFAULT)
 
-                # Path check
                 bottom_center = (int((x1 + x2) / 2), y2)
                 if self._path_polygon is not None:
-                    result   = cv2.pointPolygonTest(self._path_polygon, bottom_center, False)
-                    in_path  = result >= 0
+                    in_path = cv2.pointPolygonTest(self._path_polygon, bottom_center, False) >= 0
                 else:
-                    in_path  = True  # conservative when SAM unavailable
+                    in_path = True  # conservative fallback
 
                 low = y2 > h * 0.6
 
@@ -269,13 +328,12 @@ class DetectionEngine(threading.Thread):
                             (x1, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
 
                 if is_hazard:
-                    hazard_info = {
-                        "label":      label,
-                        "model":      det["model_name"],
-                        "area_pct":   round(area_ratio * 100, 1),
-                        "in_path":    in_path,
-                    }
-                    hazards_this_frame.append(hazard_info)
+                    hazards_this_frame.append({
+                        "label":    label,
+                        "model":    det["model_name"],
+                        "area_pct": round(area_ratio * 100, 1),
+                        "in_path":  in_path,
+                    })
                     log_entries.append({
                         "timestamp":   datetime.now().strftime("%H:%M:%S"),
                         "object_type": label,
@@ -286,16 +344,13 @@ class DetectionEngine(threading.Thread):
 
             # ── Alerts & logging ───────────────────────────────────── #
             if hazards_this_frame:
-                # Fire audio only for labels that haven't alerted recently.
-                # This means each object type alerts once when it first
-                # appears, then goes quiet until it's been gone long enough.
                 for hazard in hazards_this_frame:
-                    lbl = hazard["label"]
+                    lbl  = hazard["label"]
                     last = self._label_alert_times.get(lbl, 0)
                     if current_time - last >= LABEL_COOLDOWN:
                         self._play_audio()
                         self._label_alert_times[lbl] = current_time
-                        break   # one sound at a time; next new label fires next frame
+                        break
 
                 self._write_csv(log_entries)
                 for entry in log_entries:
@@ -307,7 +362,8 @@ class DetectionEngine(threading.Thread):
             # ── Update shared state ────────────────────────────────── #
             self._state.set_current_hazards(hazards_this_frame)
 
-            _, jpeg = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            # Encode at lower quality — fine for streaming, faster to encode
+            _, jpeg = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 65])
             self._state.set_frame(jpeg.tobytes())
 
             # ── FPS tracking ──────────────────────────────────────── #
@@ -333,7 +389,7 @@ class DetectionEngine(threading.Thread):
             if results[0].masks and results[0].masks.xy:
                 polygons = results[0].masks.xy
                 self._path_polygon = max(polygons, key=cv2.contourArea)
-        except Exception as e:
+        except Exception:
             pass  # SAM failures are non-fatal; keep last polygon
 
     # ------------------------------------------------------------------ #
@@ -361,24 +417,46 @@ class DetectionEngine(threading.Thread):
             print(f"[WARN] Model '{name}' inference error: {e}")
         return detections
 
-    def _run_all_models(self, frame) -> list[dict]:
-        """Run all enabled models in parallel and merge detections."""
-        enabled = [
-            (name, cfg) for name, cfg in MODEL_REGISTRY.items()
-            if name in self._models and self._state.is_model_enabled(name)
-        ]
-        if not enabled:
-            return []
+    def _run_models(self, frame, run_custom: bool) -> list[dict]:
+        """Run base model every frame; custom models every CUSTOM_MODEL_INTERVAL frames.
+        Cached custom detections are reused between custom model runs."""
 
-        detections = []
-        with ThreadPoolExecutor(max_workers=len(enabled)) as executor:
-            futures = {
-                executor.submit(self._run_one_model, name, cfg, frame): name
-                for name, cfg in enabled
-            }
-            for future in as_completed(futures):
-                detections.extend(future.result())
-        return detections
+        enabled = {
+            name: cfg for name, cfg in MODEL_REGISTRY.items()
+            if name in self._models and self._state.is_model_enabled(name)
+        }
+
+        # Decide which models to run this frame
+        to_run = {}
+        for name, cfg in enabled.items():
+            if name == "base" or run_custom:
+                to_run[name] = cfg
+
+        if not to_run:
+            return self._last_custom_detections
+
+        # Submit all selected models to the persistent thread pool
+        futures = {
+            self._executor.submit(self._run_one_model, name, cfg, frame): name
+            for name, cfg in to_run.items()
+        }
+
+        base_detections   = []
+        custom_detections = []
+
+        for future in as_completed(futures):
+            name = futures[future]
+            results = future.result()
+            if name == "base":
+                base_detections.extend(results)
+            else:
+                custom_detections.extend(results)
+
+        # Update cache only when custom models actually ran
+        if run_custom:
+            self._last_custom_detections = custom_detections
+
+        return base_detections + self._last_custom_detections
 
     # ------------------------------------------------------------------ #
     # Audio helper                                                        #
