@@ -408,27 +408,38 @@ class DetectionEngine(threading.Thread):
                 }
 
             # Alerts & logging.
-            if hazards_this_frame:
-                # Count how many hazards exist per label this frame.
-                label_counts: dict[str, int] = {}
-                for hazard in hazards_this_frame:
-                    lbl = hazard["label"]
-                    label_counts[lbl] = label_counts.get(lbl, 0) + 1
+            # Build per-label counts every frame so we can reset disappeared labels.
+            label_counts: dict[str, int] = {}
+            for hazard in hazards_this_frame:
+                lbl = hazard["label"]
+                label_counts[lbl] = label_counts.get(lbl, 0) + 1
 
+            # Reset count for labels no longer hazardous so re-entry beeps correctly.
+            for lbl in list(self._label_alert_state.keys()):
+                if lbl not in label_counts:
+                    self._label_alert_state[lbl]["count"] = 0
+
+            if hazards_this_frame:
                 total_beeps = 0
                 for lbl, count in label_counts.items():
                     prev = self._label_alert_state.get(lbl, {"time": 0, "count": 0})
-                    if current_time - prev["time"] >= LABEL_COOLDOWN:
-                        # Cooldown expired — beep for every current hazard of this label.
+                    new_hazards = count - prev["count"]
+
+                    if new_hazards > 0:
+                        # New instances appeared — beep for each one.
+                        total_beeps += new_hazards
+                        self._label_alert_state[lbl] = {"time": current_time, "count": count}
+                    elif current_time - prev["time"] >= LABEL_COOLDOWN:
+                        # Same count but cooldown expired — reminder beep.
                         total_beeps += count
                         self._label_alert_state[lbl] = {"time": current_time, "count": count}
-                    elif count > prev["count"]:
-                        # New additional hazards appeared within the cooldown window.
-                        total_beeps += count - prev["count"]
-                        self._label_alert_state[lbl] = {"time": current_time, "count": count}
+                    else:
+                        # Count same or lower within cooldown — update count so the
+                        # next increase is measured from here, not from the peak.
+                        self._label_alert_state[lbl] = {"time": prev["time"], "count": count}
 
                 if total_beeps > 0:
-                    self._play_audio_n(min(total_beeps, 5))  # cap to avoid noise storm
+                    self._play_audio_n(min(total_beeps, 5))
 
                 self._write_csv(log_entries)
                 for entry in log_entries:
