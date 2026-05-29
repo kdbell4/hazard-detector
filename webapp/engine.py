@@ -63,8 +63,11 @@ MODEL_REGISTRY = {
     "speedbump": {"file": "models/speedbump_best.pt", "color": (255, 0, 255), "conf": 0.80, "use_hazard_filter": False},
 }
 
-PROXIMITY_PERSON  = 0.30
+PROXIMITY_PERSON  = 0.15   # lowered from 0.30 — catches nearby people sooner
+PROXIMITY_VEHICLE = 0.22   # vehicles need to be much closer to trigger than default
 PROXIMITY_DEFAULT = 0.08
+
+VEHICLE_LABELS = {"car", "truck", "bus", "motorcycle", "bicycle"}
 LABEL_COOLDOWN    = 8.0
 SAM_INTERVAL      = 5
 
@@ -355,7 +358,13 @@ class DetectionEngine(threading.Thread):
                 area_ratio = (rx2 - rx1) * (ry2 - ry1)
                 label = det["label"]
 
-                too_close = area_ratio > (PROXIMITY_PERSON if label == "person" else PROXIMITY_DEFAULT)
+                if label == "person":
+                    prox = PROXIMITY_PERSON
+                elif label in VEHICLE_LABELS:
+                    prox = PROXIMITY_VEHICLE
+                else:
+                    prox = PROXIMITY_DEFAULT
+                too_close = area_ratio > prox
 
                 bottom_center_inf = (int((ix1 + ix2) / 2), iy2)
                 in_path = (
