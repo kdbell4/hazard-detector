@@ -112,7 +112,7 @@ class DetectionEngine(threading.Thread):
         self._inf_frame_count: int = 0
         self._last_processed_id: int = -1
         self._cached_custom_detections: list = []
-        self._label_alert_times: dict = {}
+        self._label_alert_state: dict = {}  # label -> {"time": float, "count": int}
         self._fps_times: deque = deque(maxlen=30)
 
         # Persistent thread pool — reused every inference frame
@@ -409,12 +409,27 @@ class DetectionEngine(threading.Thread):
 
             # Alerts & logging.
             if hazards_this_frame:
+                # Count how many hazards exist per label this frame.
+                label_counts: dict[str, int] = {}
                 for hazard in hazards_this_frame:
                     lbl = hazard["label"]
-                    if current_time - self._label_alert_times.get(lbl, 0) >= LABEL_COOLDOWN:
-                        self._play_audio()
-                        self._label_alert_times[lbl] = current_time
-                        break
+                    label_counts[lbl] = label_counts.get(lbl, 0) + 1
+
+                total_beeps = 0
+                for lbl, count in label_counts.items():
+                    prev = self._label_alert_state.get(lbl, {"time": 0, "count": 0})
+                    if current_time - prev["time"] >= LABEL_COOLDOWN:
+                        # Cooldown expired — beep for every current hazard of this label.
+                        total_beeps += count
+                        self._label_alert_state[lbl] = {"time": current_time, "count": count}
+                    elif count > prev["count"]:
+                        # New additional hazards appeared within the cooldown window.
+                        total_beeps += count - prev["count"]
+                        self._label_alert_state[lbl] = {"time": current_time, "count": count}
+
+                if total_beeps > 0:
+                    self._play_audio_n(min(total_beeps, 5))  # cap to avoid noise storm
+
                 self._write_csv(log_entries)
                 for entry in log_entries:
                     self._state.add_log_entry(entry)
@@ -508,6 +523,22 @@ class DetectionEngine(threading.Thread):
                 self._alert_sound.play()
         except Exception:
             pass
+
+    def _play_audio_n(self, n: int):
+        if not self._state.is_audio_enabled() or self._alert_sound is None:
+            return
+        def _beep_loop():
+            try:
+                import pygame
+                for i in range(n):
+                    if i > 0:
+                        time.sleep(0.4)
+                    self._alert_sound.play()
+                    while pygame.mixer.get_busy():
+                        time.sleep(0.05)
+            except Exception:
+                pass
+        threading.Thread(target=_beep_loop, daemon=True).start()
 
     def _write_csv(self, entries):
         try:
