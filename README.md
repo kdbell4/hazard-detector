@@ -2,6 +2,8 @@
 
 Real-time hazard detection for electric scooters. A webcam feed is analyzed using computer vision to detect obstacles in the rider's path and trigger an audio alert before they become a danger.
 
+Devpost link with demo: https://devpost.com/software/hazard-detection-system
+
 ---
 
 ## What it does
